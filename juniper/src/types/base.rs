@@ -309,7 +309,9 @@ pub trait GraphQLType: Sized {
     ) -> Value {
         if let Some(selection_set) = selection_set {
             let mut result = OrderMap::new();
-            resolve_selection_set_into(self, info, selection_set, executor, &mut result);
+            for (k, v) in resolve_selection_set(self, info, selection_set, executor) {
+                merge_key_into(&mut result, k, v);
+            }
             Value::object(result)
         } else {
             panic!("resolve() must be implemented by non-object output types");
@@ -490,20 +492,6 @@ fn resolve_selection_set<T, CtxT>(
             }
         }
     ).fold(TreeList::empty(), TreeList::append)
-}
-
-fn resolve_selection_set_into<T, CtxT>(
-    instance: &T,
-    info: &T::TypeInfo,
-    selection_set: &[Selection],
-    executor: &Executor<CtxT>,
-    result: &mut OrderMap<String, Value>,
-) where
-    T: GraphQLType<Context = CtxT>,
-{
-    for (k, v) in resolve_selection_set(instance, info, selection_set, executor) {
-        merge_key_into(result, k, v);
-    }
 }
 
 fn is_excluded(directives: &Option<Vec<Spanning<Directive>>>, vars: &Variables) -> bool {
