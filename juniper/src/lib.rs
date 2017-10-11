@@ -146,6 +146,7 @@ mod macros;
 mod ast;
 pub mod parser;
 mod value;
+mod tree_list;
 mod types;
 mod schema;
 mod validation;
