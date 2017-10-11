@@ -2,7 +2,7 @@ use ast::{FromInputValue, InputValue, Selection, ToInputValue};
 use value::Value;
 use schema::meta::MetaType;
 
-use executor::{Executor, Registry};
+use executor::{Async, Executor, Registry};
 use types::base::GraphQLType;
 
 impl<T, CtxT> GraphQLType for Option<T>
@@ -25,10 +25,10 @@ where
         info: &T::TypeInfo,
         _: Option<&[Selection]>,
         executor: &Executor<CtxT>,
-    ) -> Value {
+    ) -> Async<Value> {
         match *self {
             Some(ref obj) => executor.resolve_into_value(info, obj),
-            None => Value::null(),
+            None => Value::null().into(),
         }
     }
 }
@@ -80,12 +80,11 @@ where
         info: &T::TypeInfo,
         _: Option<&[Selection]>,
         executor: &Executor<CtxT>,
-    ) -> Value {
-        Value::list(
+    ) -> Async<Value> {
+        Async::all(
             self.iter()
                 .map(|e| executor.resolve_into_value(info, e))
-                .collect(),
-        )
+        ).map(Value::list)
     }
 }
 
@@ -142,12 +141,11 @@ where
         info: &T::TypeInfo,
         _: Option<&[Selection]>,
         executor: &Executor<CtxT>,
-    ) -> Value {
-        Value::list(
-            self.iter()
-                .map(|e| executor.resolve_into_value(info, e))
-                .collect(),
-        )
+    ) -> Async<Value> {
+        let iter = self.iter().map(|e|
+            executor.resolve_into_value(info, e));
+
+        Async::all(iter).map(Value::list)
     }
 }
 

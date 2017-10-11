@@ -161,6 +161,48 @@ impl FieldError {
     }
 }
 
+pub enum Async<T> {
+    Immediate(T),
+}
+
+impl<T> Async<T> {
+    pub fn unwrap_immediate(self) -> T {
+        match self {
+            Async::Immediate(val) => val,
+        }
+    }
+
+    pub fn and_then<U, F>(self, f: F) -> Async<U>
+        where F: FnOnce(T) -> Async<U>
+    {
+        match self {
+            Async::Immediate(val) => f(val),
+        }
+    }
+
+    pub fn map<U, F>(self, f: F) -> Async<U>
+        where F: FnOnce(T) -> U
+    {
+        self.and_then(|val| Async::Immediate(f(val)))
+    }
+
+    pub fn all<I: Iterator<Item=Async<T>>>(asyncs: I) -> Async<Vec<T>> {
+        asyncs.fold(Async::Immediate(Vec::new()), |out, async|
+            out.and_then(|mut out| {
+                async.map(|val| {
+                    out.push(val);
+                    out
+                })
+            }))
+    }
+}
+
+impl<T> From<T> for Async<T> {
+    fn from(val: T) -> Async<T> {
+        Async::Immediate(val)
+    }
+}
+
 /// The result of resolving the value of a field of type `T`
 pub type FieldResult<T> = Result<T, FieldError>;
 
@@ -262,7 +304,7 @@ impl<'a, CtxT> Executor<'a, CtxT> {
         &self,
         info: &T::TypeInfo,
         value: &T,
-    ) -> ExecutionResult
+    ) -> Async<ExecutionResult>
     where
         NewCtxT: FromContext<CtxT>,
     {
@@ -275,8 +317,8 @@ impl<'a, CtxT> Executor<'a, CtxT> {
         &self,
         info: &T::TypeInfo,
         value: &T,
-    ) -> ExecutionResult {
-        Ok(value.resolve(info, self.current_selection_set, self))
+    ) -> Async<ExecutionResult> {
+        value.resolve(info, self.current_selection_set, self).map(Ok)
     }
 
     /// Resolve a single arbitrary value into a return value
@@ -286,14 +328,16 @@ impl<'a, CtxT> Executor<'a, CtxT> {
         &self,
         info: &T::TypeInfo,
         value: &T,
-    ) -> Value {
-        match self.resolve(info, value) {
-            Ok(v) => v,
-            Err(e) => {
-                self.push_error(e);
-                Value::null()
+    ) -> Async<Value> {
+        self.resolve(info, value).map(|result| {
+            match result {
+                Ok(v) => v,
+                Err(e) => {
+                    self.push_error(e);
+                    Value::null().into()
+                }
             }
-        }
+        })
     }
 
     /// Derive a new executor by replacing the context
@@ -516,7 +560,7 @@ where
     let mut errors = errors.into_inner().unwrap();
     errors.sort();
 
-    Ok((value, errors))
+    Ok((value.unwrap_immediate(), errors))
 }
 
 impl<'r> Registry<'r> {

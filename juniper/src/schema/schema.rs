@@ -1,5 +1,5 @@
 use types::base::{Arguments, GraphQLType, TypeKind};
-use executor::{ExecutionResult, Executor, Registry};
+use executor::{Async, ExecutionResult, Executor, Registry};
 
 use schema::meta::{Argument, EnumMeta, EnumValue, Field, InputObjectMeta, InterfaceMeta, MetaType,
                    ObjectMeta, UnionMeta};
@@ -27,7 +27,7 @@ where
         field: &str,
         args: &Arguments,
         executor: &Executor<CtxT>,
-    ) -> ExecutionResult {
+    ) -> Async<ExecutionResult> {
         match field {
             "__schema" => executor
                 .replaced_context(&self.schema)

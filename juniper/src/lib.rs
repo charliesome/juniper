@@ -174,8 +174,9 @@ use executor::execute_validated_query;
 pub use ast::{FromInputValue, InputValue, Selection, ToInputValue, Type};
 pub use value::Value;
 pub use types::base::{Arguments, GraphQLType, TypeKind};
-pub use executor::{Context, ExecutionError, ExecutionResult, Executor, FieldError, FieldResult,
-                   FromContext, IntoResolvable, Registry, Variables};
+pub use executor::{Async, Context, ExecutionError, ExecutionResult, Executor,
+                   FieldError, FieldResult, FromContext, IntoResolvable,
+                   Registry, Variables};
 pub use validation::RuleError;
 pub use types::scalars::{EmptyMutation, ID};
 pub use schema::model::RootNode;

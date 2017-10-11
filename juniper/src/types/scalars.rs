@@ -7,7 +7,7 @@ use value::Value;
 
 use schema::meta::MetaType;
 
-use executor::{Executor, Registry};
+use executor::{Async, Executor, Registry};
 use types::base::GraphQLType;
 
 /// An ID as defined by the GraphQL specification
@@ -71,8 +71,8 @@ impl<'a> GraphQLType for &'a str {
         registry.build_scalar_type::<String>(&()).into_meta()
     }
 
-    fn resolve(&self, _: &(), _: Option<&[Selection]>, _: &Executor<Self::Context>) -> Value {
-        Value::string(self)
+    fn resolve(&self, _: &(), _: Option<&[Selection]>, _: &Executor<Self::Context>) -> Async<Value> {
+        Value::string(self).into()
     }
 }
 

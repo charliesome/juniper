@@ -410,7 +410,7 @@ macro_rules! graphql_object {
                 args: &$crate::Arguments,
                 executor: &$crate::Executor<Self::Context>
             )
-                -> $crate::ExecutionResult
+                -> $crate::Async<$crate::ExecutionResult>
             {
                 __graphql__build_field_matches!(
                     ($outname, $mainself, field, args, executor),

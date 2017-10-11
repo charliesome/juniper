@@ -77,11 +77,19 @@ macro_rules! __graphql__build_field_matches {
                     $body
                 })();
 
-                return ($crate::IntoResolvable::into(result, $executorvar.context())).and_then(
-                    |res| match res {
-                        Some((ctx, r)) => $executorvar.replaced_context(ctx).resolve_with_ctx(&(), &r),
-                        None => Ok($crate::Value::null()),
-                    })
+                let resolvable = $crate::IntoResolvable::into(result, $executorvar.context());
+
+                return match resolvable {
+                    Ok(Some((ctx, r))) => {
+                        $executorvar.replaced_context(ctx).resolve_with_ctx(&(), &r)
+                    }
+                    Ok(None) => {
+                        Into::<$crate::Async<_>>::into(Ok($crate::Value::null()))
+                    }
+                    Err(e) => {
+                        Into::<$crate::Async<_>>::into(Err(e))
+                    }
+                }
             }
         )*
         panic!("Field {} not found on type {}", $fieldvar, $outname);

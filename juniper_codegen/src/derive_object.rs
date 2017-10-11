@@ -165,14 +165,14 @@ pub fn impl_object(ast: &syn::DeriveInput) -> Tokens {
             }
 
             fn resolve_field(&self, _: &(), field_name: &str, _: &::juniper::Arguments, executor: &::juniper::Executor<Self::Context>)
-                -> ::juniper::ExecutionResult
+                -> ::juniper::Async<::juniper::ExecutionResult>
             {
-
-                match field_name {
-                    #(#resolvers)*
-                    _ => panic!("Field {} not found on type {}", field_name, #ident_name),
-                }
-
+                Into::<::juniper::Async<_>>::into(
+                    match field_name {
+                        #(#resolvers)*
+                        _ => panic!("Field {} not found on type {}", field_name, #ident_name),
+                    }
+                )
             }
         }
     };

@@ -2,7 +2,7 @@ use ordermap::OrderMap;
 use ordermap::Entry;
 
 use ast::{Directive, Field, FragmentSpread, FromInputValue, InlineFragment, InputValue, Selection};
-use executor::Variables;
+use executor::{Async, Variables};
 use value::Value;
 
 use schema::meta::{Argument, MetaType};
@@ -258,7 +258,7 @@ pub trait GraphQLType: Sized {
         field_name: &str,
         arguments: &Arguments,
         executor: &Executor<Self::Context>,
-    ) -> ExecutionResult {
+    ) -> Async<ExecutionResult> {
         panic!("resolve_field must be implemented by object types");
     }
 
@@ -275,9 +275,9 @@ pub trait GraphQLType: Sized {
         type_name: &str,
         selection_set: Option<&[Selection]>,
         executor: &Executor<Self::Context>,
-    ) -> ExecutionResult {
+    ) -> Async<ExecutionResult> {
         if Self::name(info).unwrap() == type_name {
-            Ok(self.resolve(info, selection_set, executor))
+            self.resolve(info, selection_set, executor).map(Ok)
         } else {
             panic!("resolve_into_type must be implemented by unions and interfaces");
         }
@@ -306,13 +306,15 @@ pub trait GraphQLType: Sized {
         info: &Self::TypeInfo,
         selection_set: Option<&[Selection]>,
         executor: &Executor<Self::Context>,
-    ) -> Value {
+    ) -> Async<Value> {
         if let Some(selection_set) = selection_set {
-            let mut result = OrderMap::new();
-            for (k, v) in resolve_selection_set(self, info, selection_set, executor) {
-                merge_key_into(&mut result, k, v);
-            }
-            Value::object(result)
+            resolve_selection_set(self, info, selection_set, executor).map(|results| {
+                let mut map = OrderMap::new();
+                for (k, v) in results {
+                    merge_key_into(&mut map, k, v);
+                }
+                Value::object(map).into()
+            })
         } else {
             panic!("resolve() must be implemented by non-object output types");
         }
@@ -326,11 +328,11 @@ fn resolve_selection_field<T, CtxT>(
     info: &T::TypeInfo,
     executor: &Executor<CtxT>,
     meta_type: &MetaType,
-) -> TreeList<(String, Value)>
+) -> Async<TreeList<(String, Value)>>
     where T: GraphQLType<Context = CtxT>
 {
     if is_excluded(&f.directives, executor.variables()) {
-        return TreeList::empty();
+        return TreeList::empty().into();
     }
 
     let response_name = f.alias.as_ref().unwrap_or(&f.name).item;
@@ -339,7 +341,7 @@ fn resolve_selection_field<T, CtxT>(
         return TreeList::item((
             response_name.to_owned(),
             Value::string(instance.concrete_type_name(executor.context())),
-        ));
+        )).into();
     }
 
     let meta_field = meta_type.field_by_name(f.name.item).unwrap_or_else(|| {
@@ -375,15 +377,17 @@ fn resolve_selection_field<T, CtxT>(
         &sub_exec,
     );
 
-    let item = match field_result {
-        Ok(v) => (response_name.to_owned(), v),
-        Err(e) => {
-            sub_exec.push_error_at(e, start_pos.clone());
-            (response_name.to_owned(), Value::null())
-        }
-    };
+    field_result.map(|field_result| {
+        let item = match field_result {
+            Ok(v) => (response_name.to_owned(), v),
+            Err(e) => {
+                sub_exec.push_error_at(e, start_pos.clone());
+                (response_name.to_owned(), Value::null())
+            }
+        };
 
-    TreeList::item(item)
+        TreeList::item(item)
+    })
 }
 
 fn resolve_fragment_spread<T, CtxT>(
@@ -391,11 +395,11 @@ fn resolve_fragment_spread<T, CtxT>(
     instance: &T,
     info: &T::TypeInfo,
     executor: &Executor<CtxT>,
-) -> TreeList<(String, Value)>
+) -> Async<TreeList<(String, Value)>>
     where T: GraphQLType<Context = CtxT>
 {
     if is_excluded(&spread.directives, executor.variables()) {
-        return TreeList::empty();
+        return TreeList::empty().into();
     }
 
     let fragment = &executor
@@ -416,11 +420,11 @@ fn resolve_inline_fragment<T, CtxT>(
     instance: &T,
     info: &T::TypeInfo,
     executor: &Executor<CtxT>,
-) -> TreeList<(String, Value)>
+) -> Async<TreeList<(String, Value)>>
     where T: GraphQLType<Context = CtxT>
 {
     if is_excluded(&fragment.directives, executor.variables()) {
-        return TreeList::empty();
+        return TreeList::empty().into();
     }
 
     let sub_exec = executor
@@ -434,14 +438,16 @@ fn resolve_inline_fragment<T, CtxT>(
             &sub_exec,
         );
 
-        if let Ok(Value::Object(mut hash_map)) = sub_result {
-            TreeList::from_iter(hash_map.drain(..))
-        } else if let Err(e) = sub_result {
-            sub_exec.push_error_at(e, start_pos.clone());
-            TreeList::empty()
-        } else {
-            TreeList::empty()
-        }
+        sub_result.map(|sub_result|
+            if let Ok(Value::Object(mut hash_map)) = sub_result {
+                TreeList::from_iter(hash_map.drain(..))
+            } else if let Err(e) = sub_result {
+                sub_exec.push_error_at(e, start_pos.clone());
+                TreeList::empty()
+            } else {
+                TreeList::empty()
+            }
+        )
     } else {
         resolve_selection_set(
             instance,
@@ -457,7 +463,7 @@ fn resolve_selection_set<T, CtxT>(
     info: &T::TypeInfo,
     selection_set: &[Selection],
     executor: &Executor<CtxT>,
-) -> TreeList<(String, Value)>
+) -> Async<TreeList<(String, Value)>>
     where T: GraphQLType<Context = CtxT>,
 {
     let meta_type = executor
@@ -469,7 +475,7 @@ fn resolve_selection_set<T, CtxT>(
         )
         .expect("Type not found in schema");
 
-    selection_set.iter().map(|selection|
+    Async::all(selection_set.iter().map(|selection|
         match *selection {
             Selection::Field(Spanning {
                 item: ref f,
@@ -491,7 +497,8 @@ fn resolve_selection_set<T, CtxT>(
                 resolve_inline_fragment(fragment, start_pos, instance, info, executor)
             }
         }
-    ).fold(TreeList::empty(), TreeList::append)
+    )).map(|results|
+        results.into_iter().fold(TreeList::empty(), TreeList::append))
 }
 
 fn is_excluded(directives: &Option<Vec<Spanning<Directive>>>, vars: &Variables) -> bool {

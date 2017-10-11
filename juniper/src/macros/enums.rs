@@ -84,11 +84,11 @@ macro_rules! graphql_enum {
                     .into_meta()
             }
 
-            fn resolve(&self, _: &(), _: Option<&[$crate::Selection]>, _: &$crate::Executor<Self::Context>) -> $crate::Value {
+            fn resolve(&self, _: &(), _: Option<&[$crate::Selection]>, _: &$crate::Executor<Self::Context>) -> $crate::Async<$crate::Value> {
                 match *self {
                     $(
                         graphql_enum!(@as_pattern, $eval) =>
-                            $crate::Value::string(graphql_enum!(@as_expr, $ename)) ),*
+                            Into::<$crate::Async<_>>::into($crate::Value::string(graphql_enum!(@as_expr, $ename))) ),*
                 }
             }
         }

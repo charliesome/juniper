@@ -2,7 +2,7 @@ use ast::{FromInputValue, InputValue, Selection, ToInputValue};
 use value::Value;
 
 use schema::meta::MetaType;
-use executor::{ExecutionResult, Executor, Registry};
+use executor::{Async, ExecutionResult, Executor, Registry};
 use types::base::{Arguments, GraphQLType};
 
 impl<T, CtxT> GraphQLType for Box<T>
@@ -26,7 +26,7 @@ where
         name: &str,
         selection_set: Option<&[Selection]>,
         executor: &Executor<CtxT>,
-    ) -> ExecutionResult {
+    ) -> Async<ExecutionResult> {
         (**self).resolve_into_type(info, name, selection_set, executor)
     }
 
@@ -36,7 +36,7 @@ where
         field: &str,
         args: &Arguments,
         executor: &Executor<CtxT>,
-    ) -> ExecutionResult {
+    ) -> Async<ExecutionResult> {
         (**self).resolve_field(info, field, args, executor)
     }
 
@@ -45,7 +45,7 @@ where
         info: &T::TypeInfo,
         selection_set: Option<&[Selection]>,
         executor: &Executor<CtxT>,
-    ) -> Value {
+    ) -> Async<Value> {
         (**self).resolve(info, selection_set, executor)
     }
 }
@@ -92,7 +92,7 @@ where
         name: &str,
         selection_set: Option<&[Selection]>,
         executor: &Executor<CtxT>,
-    ) -> ExecutionResult {
+    ) -> Async<ExecutionResult> {
         (**self).resolve_into_type(info, name, selection_set, executor)
     }
 
@@ -102,7 +102,7 @@ where
         field: &str,
         args: &Arguments,
         executor: &Executor<CtxT>,
-    ) -> ExecutionResult {
+    ) -> Async<ExecutionResult> {
         (**self).resolve_field(info, field, args, executor)
     }
 
@@ -111,7 +111,7 @@ where
         info: &T::TypeInfo,
         selection_set: Option<&[Selection]>,
         executor: &Executor<CtxT>,
-    ) -> Value {
+    ) -> Async<Value> {
         (**self).resolve(info, selection_set, executor)
     }
 }

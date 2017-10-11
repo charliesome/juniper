@@ -164,10 +164,12 @@ pub fn impl_enum(ast: &syn::DeriveInput) -> Tokens {
                 meta.into_meta()
             }
 
-            fn resolve(&self, _: &(), _: Option<&[::juniper::Selection]>, _: &::juniper::Executor<Self::Context>) -> ::juniper::Value {
-                match self {
+            fn resolve(&self, _: &(), _: Option<&[::juniper::Selection]>, _: &::juniper::Executor<Self::Context>)
+                -> ::juniper::Async<::juniper::Value>
+            {
+                Into::<::juniper::Async<_>>::into(match self {
                     #(#resolves)*
-                }
+                })
             }
         }
 
