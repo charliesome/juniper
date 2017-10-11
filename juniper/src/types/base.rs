@@ -1,13 +1,13 @@
 use ordermap::OrderMap;
 use ordermap::Entry;
 
-use ast::{Directive, FromInputValue, InputValue, Selection};
+use ast::{Directive, Field, FragmentSpread, FromInputValue, InlineFragment, InputValue, Selection};
 use executor::Variables;
 use value::Value;
 
 use schema::meta::{Argument, MetaType};
 use executor::{ExecutionResult, Executor, Registry};
-use parser::Spanning;
+use parser::{Spanning, SourcePosition};
 
 /// GraphQL type kind
 ///
@@ -315,6 +315,142 @@ pub trait GraphQLType: Sized {
     }
 }
 
+fn resolve_selection_field<T, CtxT>(
+    f: &Field,
+    start_pos: &SourcePosition,
+    instance: &T,
+    info: &T::TypeInfo,
+    executor: &Executor<CtxT>,
+    meta_type: &MetaType,
+    result: &mut OrderMap<String, Value>,
+)
+    where T: GraphQLType<Context = CtxT>
+{
+    if is_excluded(&f.directives, executor.variables()) {
+        return;
+    }
+
+    let response_name = &f.alias.as_ref().unwrap_or(&f.name).item;
+
+    if f.name.item == "__typename" {
+        result.insert(
+            (*response_name).to_owned(),
+            Value::string(instance.concrete_type_name(executor.context())),
+        );
+        return;
+    }
+
+    let meta_field = meta_type.field_by_name(f.name.item).unwrap_or_else(|| {
+        panic!(format!(
+            "Field {} not found on type {:?}",
+            f.name.item,
+            meta_type.name()
+        ))
+    });
+
+    let exec_vars = executor.variables();
+
+    let sub_exec = executor.sub_executor(
+        Some(response_name),
+        start_pos.clone(),
+        f.selection_set.as_ref().map(|v| &v[..]),
+    );
+
+    let field_result = instance.resolve_field(
+        info,
+        f.name.item,
+        &Arguments::new(
+            f.arguments.as_ref().map(|m| {
+                m.item
+                    .iter()
+                    .map(|&(ref k, ref v)| {
+                        (k.item, v.item.clone().into_const(exec_vars))
+                    })
+                    .collect()
+            }),
+            &meta_field.arguments,
+        ),
+        &sub_exec,
+    );
+
+    match field_result {
+        Ok(v) => merge_key_into(result, response_name, v),
+        Err(e) => {
+            sub_exec.push_error_at(e, start_pos.clone());
+            result.insert((*response_name).to_owned(), Value::null());
+        }
+    }
+}
+
+fn resolve_fragment_spread<T, CtxT>(
+    spread: &FragmentSpread,
+    instance: &T,
+    info: &T::TypeInfo,
+    executor: &Executor<CtxT>,
+    result: &mut OrderMap<String, Value>,
+)
+    where T: GraphQLType<Context = CtxT>
+{
+    if is_excluded(&spread.directives, executor.variables()) {
+        return;
+    }
+
+    let fragment = &executor
+        .fragment_by_name(spread.name.item)
+        .expect("Fragment could not be found");
+
+    resolve_selection_set_into(
+        instance,
+        info,
+        &fragment.selection_set[..],
+        executor,
+        result,
+    );
+}
+
+fn resolve_inline_fragment<T, CtxT>(
+    fragment: &InlineFragment,
+    start_pos: &SourcePosition,
+    instance: &T,
+    info: &T::TypeInfo,
+    executor: &Executor<CtxT>,
+    result: &mut OrderMap<String, Value>,
+)
+    where T: GraphQLType<Context = CtxT>
+{
+    if is_excluded(&fragment.directives, executor.variables()) {
+        return;
+    }
+
+    let sub_exec = executor
+        .sub_executor(None, start_pos.clone(), Some(&fragment.selection_set[..]));
+
+    if let Some(ref type_condition) = fragment.type_condition {
+        let sub_result = instance.resolve_into_type(
+            info,
+            type_condition.item,
+            Some(&fragment.selection_set[..]),
+            &sub_exec,
+        );
+
+        if let Ok(Value::Object(mut hash_map)) = sub_result {
+            for (k, v) in hash_map.drain(..) {
+                result.insert(k, v);
+            }
+        } else if let Err(e) = sub_result {
+            sub_exec.push_error_at(e, start_pos.clone());
+        }
+    } else {
+        resolve_selection_set_into(
+            instance,
+            info,
+            &fragment.selection_set[..],
+            &sub_exec,
+            result,
+        );
+    }
+}
+
 fn resolve_selection_set_into<T, CtxT>(
     instance: &T,
     info: &T::TypeInfo,
@@ -340,116 +476,19 @@ fn resolve_selection_set_into<T, CtxT>(
                 start: ref start_pos,
                 ..
             }) => {
-                if is_excluded(&f.directives, executor.variables()) {
-                    continue;
-                }
-
-                let response_name = &f.alias.as_ref().unwrap_or(&f.name).item;
-
-                if f.name.item == "__typename" {
-                    result.insert(
-                        (*response_name).to_owned(),
-                        Value::string(instance.concrete_type_name(executor.context())),
-                    );
-                    continue;
-                }
-
-                let meta_field = meta_type.field_by_name(f.name.item).unwrap_or_else(|| {
-                    panic!(format!(
-                        "Field {} not found on type {:?}",
-                        f.name.item,
-                        meta_type.name()
-                    ))
-                });
-
-                let exec_vars = executor.variables();
-
-                let sub_exec = executor.sub_executor(
-                    Some(response_name),
-                    start_pos.clone(),
-                    f.selection_set.as_ref().map(|v| &v[..]),
-                );
-
-                let field_result = instance.resolve_field(
-                    info,
-                    f.name.item,
-                    &Arguments::new(
-                        f.arguments.as_ref().map(|m| {
-                            m.item
-                                .iter()
-                                .map(|&(ref k, ref v)| {
-                                    (k.item, v.item.clone().into_const(exec_vars))
-                                })
-                                .collect()
-                        }),
-                        &meta_field.arguments,
-                    ),
-                    &sub_exec,
-                );
-
-                match field_result {
-                    Ok(v) => merge_key_into(result, response_name, v),
-                    Err(e) => {
-                        sub_exec.push_error_at(e, start_pos.clone());
-                        result.insert((*response_name).to_owned(), Value::null());
-                    }
-                }
+                resolve_selection_field(f, start_pos, instance, info, executor, meta_type, result);
             }
             Selection::FragmentSpread(Spanning {
                 item: ref spread, ..
             }) => {
-                if is_excluded(&spread.directives, executor.variables()) {
-                    continue;
-                }
-
-                let fragment = &executor
-                    .fragment_by_name(spread.name.item)
-                    .expect("Fragment could not be found");
-
-                resolve_selection_set_into(
-                    instance,
-                    info,
-                    &fragment.selection_set[..],
-                    executor,
-                    result,
-                );
+                resolve_fragment_spread(spread, instance, info, executor, result);
             }
             Selection::InlineFragment(Spanning {
                 item: ref fragment,
                 start: ref start_pos,
                 ..
             }) => {
-                if is_excluded(&fragment.directives, executor.variables()) {
-                    continue;
-                }
-
-                let sub_exec = executor
-                    .sub_executor(None, start_pos.clone(), Some(&fragment.selection_set[..]));
-
-                if let Some(ref type_condition) = fragment.type_condition {
-                    let sub_result = instance.resolve_into_type(
-                        info,
-                        type_condition.item,
-                        Some(&fragment.selection_set[..]),
-                        &sub_exec,
-                    );
-
-                    if let Ok(Value::Object(mut hash_map)) = sub_result {
-                        for (k, v) in hash_map.drain(..) {
-                            result.insert(k, v);
-                        }
-                    } else if let Err(e) = sub_result {
-                        sub_exec.push_error_at(e, start_pos.clone());
-                    }
-                } else {
-                    resolve_selection_set_into(
-                        instance,
-                        info,
-                        &fragment.selection_set[..],
-                        &sub_exec,
-                        result,
-                    );
-                }
+                resolve_inline_fragment(fragment, start_pos, instance, info, executor, result);
             }
         }
     }
