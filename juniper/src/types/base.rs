@@ -9,6 +9,8 @@ use schema::meta::{Argument, MetaType};
 use executor::{ExecutionResult, Executor, Registry};
 use parser::{Spanning, SourcePosition};
 
+use tree_list::TreeList;
+
 /// GraphQL type kind
 ///
 /// The GraphQL specification defines a number of type kinds - the meta type
@@ -322,22 +324,20 @@ fn resolve_selection_field<T, CtxT>(
     info: &T::TypeInfo,
     executor: &Executor<CtxT>,
     meta_type: &MetaType,
-    result: &mut OrderMap<String, Value>,
-)
+) -> TreeList<(String, Value)>
     where T: GraphQLType<Context = CtxT>
 {
     if is_excluded(&f.directives, executor.variables()) {
-        return;
+        return TreeList::empty();
     }
 
-    let response_name = &f.alias.as_ref().unwrap_or(&f.name).item;
+    let response_name = f.alias.as_ref().unwrap_or(&f.name).item;
 
     if f.name.item == "__typename" {
-        result.insert(
-            (*response_name).to_owned(),
+        return TreeList::item((
+            response_name.to_owned(),
             Value::string(instance.concrete_type_name(executor.context())),
-        );
-        return;
+        ));
     }
 
     let meta_field = meta_type.field_by_name(f.name.item).unwrap_or_else(|| {
@@ -373,13 +373,15 @@ fn resolve_selection_field<T, CtxT>(
         &sub_exec,
     );
 
-    match field_result {
-        Ok(v) => merge_key_into(result, response_name, v),
+    let item = match field_result {
+        Ok(v) => (response_name.to_owned(), v),
         Err(e) => {
             sub_exec.push_error_at(e, start_pos.clone());
-            result.insert((*response_name).to_owned(), Value::null());
+            (response_name.to_owned(), Value::null())
         }
-    }
+    };
+
+    TreeList::item(item)
 }
 
 fn resolve_fragment_spread<T, CtxT>(
@@ -387,25 +389,23 @@ fn resolve_fragment_spread<T, CtxT>(
     instance: &T,
     info: &T::TypeInfo,
     executor: &Executor<CtxT>,
-    result: &mut OrderMap<String, Value>,
-)
+) -> TreeList<(String, Value)>
     where T: GraphQLType<Context = CtxT>
 {
     if is_excluded(&spread.directives, executor.variables()) {
-        return;
+        return TreeList::empty();
     }
 
     let fragment = &executor
         .fragment_by_name(spread.name.item)
         .expect("Fragment could not be found");
 
-    resolve_selection_set_into(
+    resolve_selection_set(
         instance,
         info,
         &fragment.selection_set[..],
         executor,
-        result,
-    );
+    )
 }
 
 fn resolve_inline_fragment<T, CtxT>(
@@ -414,12 +414,11 @@ fn resolve_inline_fragment<T, CtxT>(
     instance: &T,
     info: &T::TypeInfo,
     executor: &Executor<CtxT>,
-    result: &mut OrderMap<String, Value>,
-)
+) -> TreeList<(String, Value)>
     where T: GraphQLType<Context = CtxT>
 {
     if is_excluded(&fragment.directives, executor.variables()) {
-        return;
+        return TreeList::empty();
     }
 
     let sub_exec = executor
@@ -434,21 +433,63 @@ fn resolve_inline_fragment<T, CtxT>(
         );
 
         if let Ok(Value::Object(mut hash_map)) = sub_result {
-            for (k, v) in hash_map.drain(..) {
-                result.insert(k, v);
-            }
+            TreeList::from_iter(hash_map.drain(..))
         } else if let Err(e) = sub_result {
             sub_exec.push_error_at(e, start_pos.clone());
+            TreeList::empty()
+        } else {
+            TreeList::empty()
         }
     } else {
-        resolve_selection_set_into(
+        resolve_selection_set(
             instance,
             info,
             &fragment.selection_set[..],
             &sub_exec,
-            result,
-        );
+        )
     }
+}
+
+fn resolve_selection_set<T, CtxT>(
+    instance: &T,
+    info: &T::TypeInfo,
+    selection_set: &[Selection],
+    executor: &Executor<CtxT>,
+) -> TreeList<(String, Value)>
+    where T: GraphQLType<Context = CtxT>,
+{
+    let meta_type = executor
+        .schema()
+        .concrete_type_by_name(
+            T::name(info)
+                .expect("Resolving named type's selection set")
+                .as_ref(),
+        )
+        .expect("Type not found in schema");
+
+    selection_set.iter().map(|selection|
+        match *selection {
+            Selection::Field(Spanning {
+                item: ref f,
+                start: ref start_pos,
+                ..
+            }) => {
+                resolve_selection_field(f, start_pos, instance, info, executor, meta_type)
+            }
+            Selection::FragmentSpread(Spanning {
+                item: ref spread, ..
+            }) => {
+                resolve_fragment_spread(spread, instance, info, executor)
+            }
+            Selection::InlineFragment(Spanning {
+                item: ref fragment,
+                start: ref start_pos,
+                ..
+            }) => {
+                resolve_inline_fragment(fragment, start_pos, instance, info, executor)
+            }
+        }
+    ).fold(TreeList::empty(), TreeList::append)
 }
 
 fn resolve_selection_set_into<T, CtxT>(
@@ -460,37 +501,8 @@ fn resolve_selection_set_into<T, CtxT>(
 ) where
     T: GraphQLType<Context = CtxT>,
 {
-    let meta_type = executor
-        .schema()
-        .concrete_type_by_name(
-            T::name(info)
-                .expect("Resolving named type's selection set")
-                .as_ref(),
-        )
-        .expect("Type not found in schema");
-
-    for selection in selection_set {
-        match *selection {
-            Selection::Field(Spanning {
-                item: ref f,
-                start: ref start_pos,
-                ..
-            }) => {
-                resolve_selection_field(f, start_pos, instance, info, executor, meta_type, result);
-            }
-            Selection::FragmentSpread(Spanning {
-                item: ref spread, ..
-            }) => {
-                resolve_fragment_spread(spread, instance, info, executor, result);
-            }
-            Selection::InlineFragment(Spanning {
-                item: ref fragment,
-                start: ref start_pos,
-                ..
-            }) => {
-                resolve_inline_fragment(fragment, start_pos, instance, info, executor, result);
-            }
-        }
+    for (k, v) in resolve_selection_set(instance, info, selection_set, executor) {
+        merge_key_into(result, k, v);
     }
 }
 
@@ -519,8 +531,8 @@ fn is_excluded(directives: &Option<Vec<Spanning<Directive>>>, vars: &Variables) 
     false
 }
 
-fn merge_key_into(result: &mut OrderMap<String, Value>, response_name: &str, value: Value) {
-    match result.entry(response_name.to_owned()) {
+fn merge_key_into(result: &mut OrderMap<String, Value>, response_name: String, value: Value) {
+    match result.entry(response_name) {
         Entry::Occupied(mut e) => match (e.get_mut().as_mut_object_value(), value) {
             (Some(dest_obj), Value::Object(src_obj)) => {
                 merge_maps(dest_obj, src_obj);
@@ -536,7 +548,7 @@ fn merge_key_into(result: &mut OrderMap<String, Value>, response_name: &str, val
 fn merge_maps(dest: &mut OrderMap<String, Value>, src: OrderMap<String, Value>) {
     for (key, value) in src {
         if dest.contains_key(&key) {
-            merge_key_into(dest, &key, value);
+            merge_key_into(dest, key, value);
         } else {
             dest.insert(key, value);
         }
