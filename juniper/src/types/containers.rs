@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::ast::{FromInputValue, InputValue, Selection, ToInputValue};
 use crate::schema::meta::MetaType;
 use crate::value::{ScalarRefValue, ScalarValue, Value};
@@ -212,4 +214,36 @@ where
     }
 
     Value::list(result)
+}
+
+impl<'a, S, T, CtxT> GraphQLType<S> for Cow<'a, T>
+where
+    S: ScalarValue,
+    T: GraphQLType<S, Context = CtxT>,
+    T: Clone,
+    for<'b> &'b S: ScalarRefValue<'b>,
+{
+    type Context = CtxT;
+    type TypeInfo = T::TypeInfo;
+
+    fn name(type_info: &T::TypeInfo) -> Option<&str> {
+        T::name(type_info)
+    }
+
+    fn meta<'r>(info: &T::TypeInfo, registry: &mut Registry<'r, S>) -> MetaType<'r, S>
+    where
+        S: 'r,
+        for<'b> &'b S: ScalarRefValue<'b>,
+    {
+        T::meta(info, registry)
+    }
+
+    fn resolve(
+        &self,
+        info: &T::TypeInfo,
+        selection: Option<&[Selection<S>]>,
+        executor: &Executor<CtxT, S>,
+    ) -> Value<S> {
+        T::resolve(&self, info, selection, executor)
+    }
 }
